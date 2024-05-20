@@ -1,6 +1,8 @@
 import numpy as np
+import math
 import torch
 import torch.nn as nn
+import torch.functional as F
 from torchvision import datasets, transforms
 
 
@@ -27,8 +29,9 @@ class LightViT(nn.Module):
         # 2A) Learnable Parameter.
         self.cls_token = nn.Parameter(torch.zeros(1, 1, self.d))
 
-        # 2B) Positional embedding
-        self.pos_embed = None
+        # 2B) Positional embedding.
+        self.pos_embedding = self.get_pos_embeddings(embedding_num=n_patches * n_patches + 1, embedding_dim=self.d)
+
         # 3) Encoder blocks
 
         # 5) Classification Head
@@ -49,7 +52,8 @@ class LightViT(nn.Module):
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)
         embeddings = torch.cat((cls_tokens, embeddings), dim=1)
 
-        ## Add positional embeddings
+        # Add positional embeddings.
+        embeddings = embeddings + self.pos_embedding
 
         ## Pass through encoder
 
@@ -59,7 +63,8 @@ class LightViT(nn.Module):
 
         return embeddings
 
-    def get_patches(self, x, num_patches_per_dim=7):
+    @staticmethod
+    def get_patches(x, num_patches_per_dim=7):
         """
         Extract patches from an input image.
 
@@ -92,6 +97,62 @@ class LightViT(nn.Module):
         patches = patches.view(B, num_patches, patch_dim)
 
         return patches
+
+    @staticmethod
+    def get_pos_embeddings(embedding_num, embedding_dim):
+        # Create a matrix of size embedding_num*embedding_dim (d) to store all positional embeddings.
+        pos_embedding = torch.zeros(embedding_num, embedding_dim)
+
+        position = torch.arange(0, embedding_num, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, embedding_dim, 2).float() * (-math.log(10000.0) / embedding_dim))
+
+        # Embed even indices using sin, uneven using cos.
+        pos_embedding[:, 0::2] = torch.sin(position * div_term)
+        pos_embedding[:, 1::2] = torch.cos(position * div_term)
+        pos_embedding = pos_embedding.unsqueeze(0)
+
+        return pos_embedding
+
+
+class MHSA(nn.Module):
+    def __init__(self, d, n_heads=2):
+        super(MHSA, self).__init__()
+        assert d % n_heads == 0, "Embedding dimension must be divisible by n_heads"
+
+        self.d = d
+        self.n_heads = n_heads
+        self.head_dim = d // n_heads
+
+        self.query_layer = nn.Linear(d, d)
+        self.key_layer = nn.Linear(d, d)
+        self.value_layer = nn.Linear(d, d)
+        self.out = nn.Linear(d, d)
+
+    def split_heads(self, x):
+        N, seq_length, token_dim = x.shape
+        x = x.view(N, seq_length, self.n_heads, self.head_dim)
+        return x.transpose(0, 2, 1, 3)
+
+    def forward(self, sequences):
+        # Sequences has shape (N, seq_length, token_dim)
+        # Shape is transformed to   (N, seq_length, n_heads, token_dim / n_heads)
+        # And finally we return back    (N, seq_length, item_dim)  (through concatenation)
+        N, seq_length, token_dim = sequences.shape
+
+        q = self.split_heads(self.query_layer(sequences))
+        k = self.split_heads(self.key_layer(sequences))
+        v = self.split_heads(self.value_layer(sequences))
+
+        scores = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))
+        self_attn_weights = F.softmax(scores, dim=-1)
+
+        self_attn_output = torch.matmul(self_attn_weights, v)
+        self_attn_output = self_attn_weights.permute(0, 2, 1, 3).contiguous()
+        self_attn_output = self_attn_output.view(N, seq_length, self.d)
+
+        output = self.dense(self_attn_output)
+
+        return output
 
 
 # Example usage.
