@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 from torchvision import datasets, transforms
@@ -7,31 +8,46 @@ class LightViT(nn.Module):
     def __init__(self, image_dim, n_patches=7, n_blocks=2, d=8, n_heads=2, num_classes=10):
         super(LightViT, self).__init__()
 
-        ## Class Members
+        # Class Members.
         self.image_dim = image_dim
         self.n_patches = n_patches
-        self.patch_size = self.image_dim // self.n_patches
         self.d = d
+        self.n_blocks = n_blocks
+        self.n_heads = n_heads
+        self.num_classes = num_classes
 
-        ## 1B) Linear Mapping
-        self.linear_map = nn.Linear(self.patch_size * self.patch_size, d)
-        ## 2A) Learnable Parameter
-        self.cls_token = None;
-        ## 2B) Positional embedding
-        self.pos_embed = None;
-        ## 3) Encoder blocks
+        B, C, H, W = self.image_dim
+        patch_size_H = H // self.n_patches
+        patch_size_W = W // self.n_patches
+        self.patch_dim = (C, patch_size_H, patch_size_W)
+
+        # 1B) Linear Mapping.
+        self.linear_map = nn.Linear(in_features=int(np.prod(self.patch_dim)), out_features=d)
+
+        # 2A) Learnable Parameter.
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, self.d))
+
+        # 2B) Positional embedding
+        self.pos_embed = None
+        # 3) Encoder blocks
 
         # 5) Classification Head
         self.classifier = None
 
     def forward(self, images):
-        ## Extract patches
-        patches = self.patches(images, num_patches_per_dim=self.n_patches)
+        # Extract the patches from images.
+        patches = self.get_patches(images, num_patches_per_dim=self.n_patches)
 
-        ## Linear mapping
-        patches = self.linear_map(patches)
+        # Linearly project patches to embeddings of size d.
+        embeddings = self.linear_map(patches)
+        # TODO: Check if I should do flattening and reshaping.
 
-        ## Add classification token
+        # Classification token is like a learnable kernel of size like a patch with all zeros.
+        # We add it to other patches -> shape = (B, num_patches + 1, patch_size*patch_size).
+        # We do that for each .
+        batch_size = embeddings.size(0)
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        embeddings = torch.cat((cls_tokens, embeddings), dim=1)
 
         ## Add positional embeddings
 
@@ -41,9 +57,9 @@ class LightViT(nn.Module):
 
         ## Pass through classifier
 
-        return patches
+        return embeddings
 
-    def patches(self, x, num_patches_per_dim=7):
+    def get_patches(self, x, num_patches_per_dim=7):
         """
         Extract patches from an input image.
 
@@ -93,7 +109,7 @@ if __name__ == '__main__':
     test_set = datasets.MNIST(root='./data', train=False, download=True, transform=transform)
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=64, shuffle=False)
 
-    model = LightViT(image_dim=28, n_patches=7, d=8)
+    model = LightViT(image_dim=(64, 1, 28, 28), n_patches=7, d=8)
 
     for images, labels in train_loader:
         output = model(images)
