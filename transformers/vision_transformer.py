@@ -2,7 +2,7 @@ import numpy as np
 import math
 import torch
 import torch.nn as nn
-import torch.functional as F
+import torch.nn.functional as F
 from torchvision import datasets, transforms
 
 
@@ -33,9 +33,14 @@ class LightViT(nn.Module):
         self.pos_embedding = self.get_pos_embeddings(embedding_num=n_patches * n_patches + 1, embedding_dim=self.d)
 
         # 3) Encoder blocks
+        self.encoders = nn.ModuleList([ViTEncoder(hidden_d=self.d, n_heads=self.n_heads) for _ in range(self.n_blocks)])
 
         # 5) Classification Head
-        self.classifier = None
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(self.d),
+            nn.Linear(self.d, self.num_classes)
+        )
+        # TODO: do we need layer norm in classifier?
 
     def forward(self, images):
         # Extract the patches from images.
@@ -54,14 +59,19 @@ class LightViT(nn.Module):
 
         # Add positional embeddings.
         embeddings = embeddings + self.pos_embedding
+        x = embeddings
 
-        ## Pass through encoder
+        # Pass through the encoder.
+        for layer in self.encoders:
+            x = layer(x)
 
-        ## Get classification token
+        # Get classification tokens.
+        cls_tokens_learned = x[:, 0]
 
-        ## Pass through classifier
+        # Pass through the classifier.
+        output = self.classifier(cls_tokens_learned)
 
-        return embeddings
+        return output
 
     @staticmethod
     def get_patches(x, num_patches_per_dim=7):
@@ -114,6 +124,31 @@ class LightViT(nn.Module):
         return pos_embedding
 
 
+class ViTEncoder(nn.Module):
+    def __init__(self, hidden_d, n_heads):
+        super(ViTEncoder, self).__init__()
+        self.hidden_d = hidden_d
+        self.n_heads = n_heads
+
+        self.norm1 = nn.LayerNorm(hidden_d)
+        self.mhsa = MHSA(hidden_d, n_heads)
+        self.norm2 = nn.LayerNorm(hidden_d)
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_d, 4 * hidden_d),
+            nn.GELU(),
+            nn.Linear(4 * hidden_d, hidden_d)
+        )
+
+    def forward(self, x):
+        attn_output = self.mhsa(self.norm1(x))
+        x = x + attn_output
+
+        mlp_output = self.mlp(self.norm2(x))
+        x = x + mlp_output
+
+        return x
+
+
 class MHSA(nn.Module):
     def __init__(self, d, n_heads=2):
         super(MHSA, self).__init__()
@@ -131,7 +166,7 @@ class MHSA(nn.Module):
     def split_heads(self, x):
         N, seq_length, token_dim = x.shape
         x = x.view(N, seq_length, self.n_heads, self.head_dim)
-        return x.transpose(0, 2, 1, 3)
+        return x.permute(0, 2, 1, 3)
 
     def forward(self, sequences):
         # Sequences has shape (N, seq_length, token_dim)
@@ -147,10 +182,10 @@ class MHSA(nn.Module):
         self_attn_weights = F.softmax(scores, dim=-1)
 
         self_attn_output = torch.matmul(self_attn_weights, v)
-        self_attn_output = self_attn_weights.permute(0, 2, 1, 3).contiguous()
+        self_attn_output = self_attn_output.permute(0, 2, 1, 3).contiguous()
         self_attn_output = self_attn_output.view(N, seq_length, self.d)
 
-        output = self.dense(self_attn_output)
+        output = self.out(self_attn_output)
 
         return output
 
@@ -174,5 +209,7 @@ if __name__ == '__main__':
 
     for images, labels in train_loader:
         output = model(images)
+
+        print(output.shape)
 
         break
