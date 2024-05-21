@@ -4,6 +4,58 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import datasets, transforms
+import matplotlib.pyplot as plt
+
+
+class CustomLinear(nn.Module):
+    """
+    Custom linear transformation layer for processing image patches.
+
+    Attributes:
+        P (int): Number of patches along one dimension.
+        H (int): Height of the input image.
+        W (int): Width of the input image.
+        C (int): Number of channels in the input image.
+        d (int): Dimensionality of the output features.
+        input_dim (int): Dimensionality of the input features after patching and flattening.
+        linear (nn.Linear): Linear layer for projecting input features to output features.
+    """
+
+    def __init__(self, P, H, W, C, d):
+        super(CustomLinear, self).__init__()
+        self.P = P
+        self.H = H
+        self.W = W
+        self.C = C
+        self.d = d
+
+        self.input_dim = (H * C // P) * (W * C // P)
+
+        self.linear = nn.Linear(self.input_dim, d)
+
+    def forward(self, x):
+        """
+        Forward pass of the CustomLinear layer.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (B, P*P, input_dim), where
+                B is the batch size, P*P is the number of patches, and
+                input_dim is the dimensionality of each patch.
+
+        Returns:
+            torch.Tensor: Output tensor of shape (B, P*P, d), where
+                B is the batch size, P*P is the number of patches, and
+                d is the dimensionality of the output features.
+        """
+        B, _, _ = x.shape
+
+        # Flatten the last dimension.
+        x = x.view(B, self.P * self.P, self.input_dim)
+
+        # Apply the linear projection.
+        x = self.linear(x)
+
+        return x
 
 
 class MHSA(nn.Module):
@@ -90,6 +142,7 @@ class ViTEncoder(nn.Module):
         norm2 (nn.LayerNorm): Layer normalization layer before MLP.
         mlp (nn.Sequential): Multi-Layer Perceptron.
     """
+
     def __init__(self, hidden_d, n_heads):
         super(ViTEncoder, self).__init__()
         self.hidden_d = hidden_d
@@ -158,10 +211,10 @@ class LightViT(nn.Module):
         self.patch_dim = (C, patch_size_H, patch_size_W)
 
         # 1B) Linear Mapping.
-        self.linear_map = nn.Linear(in_features=int(np.prod(self.patch_dim)), out_features=d)
+        self.linear_map = CustomLinear(self.n_patches, H, W, C, self.d)
 
         # 2A) Learnable Parameter.
-        self.cls_token = nn.Parameter(data=torch.zeros(1, 1, self.d))
+        self.cls_token = nn.Parameter(data=torch.randn(1, 1, self.d))
 
         # 2B) Positional embedding.
         self.pos_embedding = self.get_pos_embeddings(embedding_num=n_patches * n_patches + 1, embedding_dim=self.d)
@@ -197,11 +250,11 @@ class LightViT(nn.Module):
         # We add it to other patches -> shape = (B, num_patches + 1, patch_size*patch_size).
         # We do that for each sample in the batch.
         batch_size = embeddings.size(0)
-        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1).to(images.device)
         embeddings = torch.cat((cls_tokens, embeddings), dim=1)
 
         # Add positional embeddings.
-        embeddings = embeddings + self.pos_embedding
+        embeddings = embeddings + self.pos_embedding.to(images.device)
         x = embeddings
 
         # Pass through the encoder.
@@ -244,10 +297,12 @@ class LightViT(nn.Module):
         # Use unfold to create patches.
         patches = x.unfold(2, size=patch_size_h, step=patch_size_h)  # unfold height dimension
         patches = patches.unfold(3, size=patch_size_w, step=patch_size_w)  # unfold width dimension
-        patches = patches.contiguous().view(B, C, num_patches_h * num_patches_w, patch_size_h, patch_size_w)
 
-        # Flatten the patches.
-        patches = patches.view(B, num_patches, patch_dim)
+        # Re-arrange the patches to satisfy our required dimensions (B, P*P, CxHxW/P*P).
+        patches = patches.permute(0, 2, 3, 1, 4, 5).contiguous()
+
+        # Flatten the last dimensions.
+        patches = patches.view(B, -1, C * patch_size_h * patch_size_w)
 
         return patches
 
@@ -264,7 +319,7 @@ class LightViT(nn.Module):
             torch.Tensor: Positional embeddings of shape (1, embedding_num, embedding_dim).
         """
         # Create a matrix of size embedding_num * embedding_dim (d) to store all positional embeddings.
-        pos_embedding = torch.zeros(embedding_num, embedding_dim)
+        pos_embedding = torch.empty(embedding_num, embedding_dim)
 
         position = torch.arange(0, embedding_num, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, embedding_dim, 2).float() * (-math.log(10000.0) / embedding_dim))
@@ -277,26 +332,156 @@ class LightViT(nn.Module):
         return pos_embedding
 
 
-# Example usage.
+def train_model(model, device, train_loader, criterion, optimizer, epoch):
+    """Train the model.
+
+    Args:
+        model (torch.nn.Module): The model to train.
+        device (torch.device): The device to run the training on.
+        train_loader (torch.utils.data.DataLoader): DataLoader for training data.
+        criterion (torch.nn.Module): Loss function.
+        optimizer (torch.optim.Optimizer): Optimizer.
+        epoch (int): Number of current epoch.
+
+    Returns:
+        list: List of train losses.
+    """
+    model.train()
+    for batch_idx, (images, labels) in enumerate(train_loader):
+        images, labels = images.to(device), labels.to(device)
+        optimizer.zero_grad()
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+    print(f'Epoch {epoch + 1}, Loss: {loss.item():.4f}')
+
+    return loss.item()
+
+
+def test_model(model, device, test_loader, criterion):
+    """
+    Test the model.
+
+    Args:
+        model (torch.nn.Module): The model to test.
+        device (torch.device): The device to run the training on.
+        test_loader (torch.utils.data.DataLoader): DataLoader for test data.
+        criterion (torch.nn.Module): Loss function.
+
+    Returns:
+        float: Loss at the current epoch.
+        float: Accuracy at the current epoch.
+    """
+    model.eval()
+    total_loss = 0
+    total_correct = 0
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            total_loss += loss.item()
+            _, predicted = torch.max(outputs, 1)
+            total_correct += (predicted == labels).sum().item()
+    total_loss = total_loss / len(test_loader)
+    total_correct = total_correct / len(test_loader.dataset)
+    print(f'Test Loss: {total_loss:.4f}, Accuracy: {total_correct:.4f}')
+
+    return total_loss, total_correct
+
+
+def train_test_model(model, device, train_loader, test_loader, transforms):
+    """
+    Train and test the model, then plot the training and test loss over epochs.
+
+    Args:
+        model (torch.nn.Module): The model to train and test.
+        device (torch.device): The device to run the training on.
+        train_loader (torch.utils.data.DataLoader): DataLoader for training data.
+        test_loader (torch.utils.data.DataLoader): DataLoader for test data.
+        transforms (torchvision.transforms.Compose): Transformations to apply to the data.
+
+    """
+    # Define the optimizer.
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.005)
+
+    # Define the loss.
+    criterion = nn.CrossEntropyLoss()
+
+    train_losses = []
+    test_losses = []
+    test_accs = []
+
+    # Train the model.
+    for epoch in range(5):
+        train_loss = train_model(model, device, train_loader, criterion, optimizer, epoch)
+        test_loss, test_acc = test_model(model, device, test_loader, criterion)
+        train_losses.append(train_loss)
+        test_losses.append(test_loss)
+        test_accs.append(test_acc * 100.)
+
+    # Plot the training.
+    plt.figure(figsize=(10, 5))
+    plt.plot(train_losses, label='Training loss')
+    plt.plot(test_losses, label='Test loss')
+    plt.title(f'Training and test loss of LViT. lr: 0.005. Final Accuracy: {test_accs[-1]:.2f}%')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.show()
+
+
 if __name__ == '__main__':
+    ## Train and test on MNIST dataset.
+
+    # Check if GPU is available.
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Define a transform to normalize the data.
-    transform = transforms.Compose([transforms.ToTensor(),
-                                    transforms.Normalize((0.5,), (0.5,))])
+    transform = transforms.Compose([
+        transforms.Resize((28, 28)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,))
+    ])
 
     # Download and load the training data.
     train_set = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
-    train_loader = torch.utils.data.DataLoader(train_set, batch_size=64, shuffle=True)
+    train_loader = torch.utils.data.DataLoader(train_set, batch_size=32, shuffle=True)
 
     # Download and load the test data
     test_set = datasets.MNIST(root='./data', train=False, download=True, transform=transform)
-    test_loader = torch.utils.data.DataLoader(test_set, batch_size=64, shuffle=False)
+    test_loader = torch.utils.data.DataLoader(test_set, batch_size=32, shuffle=False)
 
-    model = LightViT(image_dim=(64, 1, 28, 28), n_patches=7, d=8)
+    # Define the model.
+    model = LightViT(image_dim=(32, 1, 28, 28), n_patches=7, d=8)
+    model.to(device)
 
-    for images, labels in train_loader:
-        output = model(images)
+    train_test_model(model, device, train_loader, test_loader, transform)
 
-        print(output.shape)
+    ### Train and test on FASHION MNIST dataset.
 
-        break
+    # Check if GPU is available.
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Define a transform to normalize the data.
+    transform = transforms.Compose([
+        transforms.Resize((28, 28)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.2860,), (0.3530,))
+    ])
+
+    # Download and load the training data.
+    train_set = datasets.FashionMNIST(root='./data', train=True, download=True, transform=transform)
+    train_loader = torch.utils.data.DataLoader(train_set, batch_size=32, shuffle=True)
+
+    # Download and load the test data
+    test_set = datasets.FashionMNIST(root='./data', train=False, download=True, transform=transform)
+    test_loader = torch.utils.data.DataLoader(test_set, batch_size=32, shuffle=False)
+
+    # Define the model.
+    model = LightViT(image_dim=(32, 1, 28, 28), n_patches=7, d=8)
+    model.to(device)
+
+    # Train and test the model
+    train_test_model(model, device, train_loader, test_loader, transform)
