@@ -10,7 +10,7 @@ This repository serves as a centralized location for various machine learning an
 
 Folders:
 
-interpretability/: Contains models and scripts focused on model interpretability and explainability. These tools help in understanding how models make decisions and the factors influencing these decisions.  
+interpretability/: Contains models and scripts focused on model interpretability and explainability. These tools help in understanding how models make decisions and the factors influencing these decisions.    
 transformers/: Includes implementations of transformer models, which are widely used in natural language processing (NLP) tasks for their powerful sequence-to-sequence capabilities.  
 
 Files:
@@ -24,7 +24,7 @@ LICENSE: License file under the Apache-2.0 License.
 
 ## Getting Started ##
 
-Prerequisites:
+Prerequisites:  
 Python 3.7+  
 PyTorch 1.8.0+  
 torchvision  
