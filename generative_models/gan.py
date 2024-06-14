@@ -1,5 +1,6 @@
-import torch
 import os
+import numpy as np
+import torch
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import torch.nn as nn
@@ -10,11 +11,11 @@ from torch.utils.data import DataLoader
 
 
 class Generator(nn.Module):
-    def __init__(self):
+    def __init__(self, input_dim, output_dim):
         super(Generator, self).__init__()
 
-        self.fc1 = nn.Linear(in_features=50, out_features=128)
-        self.fc2 = nn.Linear(in_features=128, out_features=784)
+        self.fc1 = nn.Linear(in_features=input_dim, out_features=128)
+        self.fc2 = nn.Linear(in_features=128, out_features=output_dim)
 
     def forward(self, x):
         x = self.fc1(x)
@@ -26,10 +27,10 @@ class Generator(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self):
+    def __init__(self, input_dim):
         super(Discriminator, self).__init__()
 
-        self.fc1 = nn.Linear(in_features=784, out_features=128)
+        self.fc1 = nn.Linear(in_features=input_dim, out_features=128)
         self.fc2 = nn.Linear(in_features=128, out_features=1)
 
     def forward(self, x):
@@ -42,20 +43,22 @@ class Discriminator(nn.Module):
 
 
 class GAN:
-    def __init__(self):
+    def __init__(self, latent_dim, image_dim):
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        self.generator = Generator().to(device)
-        self.discriminator = Discriminator().to(device)
+        self.latent_dim = latent_dim
 
-    def save_samples(self):
-        z = torch.randn(64, 50).to(self.device)
-        samples = self.generator(z)
+        self.generator = Generator(input_dim=latent_dim, output_dim=image_dim[0] * image_dim[1]).to(device)
+        self.discriminator = Discriminator(input_dim=image_dim[0] * image_dim[1]).to(device)
+
+    def save_samples(self, epoch, batch_size):
+        noise = torch.Tensor(np.random.uniform(-1, 1, (batch_size, self.latent_dim))).to(device)
+        samples = self.generator(noise)
         samples = samples.view(samples.size(0), 28, 28).cpu().detach().numpy()
 
         fig = plt.figure(figsize=(8, 8))
-        gs = gridspec.GridSpec(8, 8)
+        gs = gridspec.GridSpec(10, 10)
         gs.update(wspace=0.05, hspace=0.05)
 
         for i, sample in enumerate(samples):
@@ -68,7 +71,7 @@ class GAN:
 
         if not os.path.exists('res'):
             os.makedirs('res')
-        plt.savefig(f'res/generated_images.png', bbox_inches='tight')
+        plt.savefig(f'res/generated_images_epoch{epoch}.png', bbox_inches='tight')
         plt.close(fig)
 
     def train(self, dataloader, num_epochs, lr):
@@ -95,48 +98,45 @@ class GAN:
                 real_imgs = imgs.view(batch_size, -1).to(self.device)
                 real_labels = torch.ones(batch_size, 1).to(self.device)
 
-                optimizer_D.zero_grad()
+                # Generate fake images.
+                noise = torch.Tensor(np.random.uniform(-1, 1, (batch_size, self.latent_dim))).to(device)
+                fake_imgs = self.generator(noise)
+                fake_labels = torch.zeros(batch_size, 1).to(self.device)
 
                 # Train Discriminator on real images.
                 outputs = self.discriminator(real_imgs)
                 d_loss_real = criterion(outputs, real_labels)
-                d_loss_real.backward()
-
-                # Generate fake images.
-                noise = torch.randn(batch_size, 50).to(self.device)
-                fake_imgs = self.generator(noise)
-                fake_labels = torch.zeros(batch_size, 1).to(self.device)
 
                 # Train Discriminator on fake images.
                 outputs = self.discriminator(fake_imgs.detach())
                 d_loss_fake = criterion(outputs, fake_labels)
-                d_loss_fake.backward()
 
-                optimizer_D.step()
                 d_loss = d_loss_real + d_loss_fake
 
+                optimizer_D.zero_grad()
+                d_loss.backward()
+                optimizer_D.step()
                 total_discriminator_loss += d_loss.item()
 
                 # Train Generator.
-                optimizer_G.zero_grad()
 
                 outputs = self.discriminator(fake_imgs)
                 g_loss = criterion(outputs, real_labels)
+
+                optimizer_G.zero_grad()
                 g_loss.backward()
-
                 optimizer_G.step()
-
                 total_generator_loss += g_loss.item()
 
             generator_loss = total_generator_loss / len(dataloader)
             discriminator_loss = total_discriminator_loss / len(dataloader)
-            
+
             history['generator_loss'].append(generator_loss)
             history['discriminator_loss'].append(discriminator_loss)
-            
-            print(f"Epoch [{epoch}/{num_epochs}], Loss G: {generator_loss*100:.2f}%, Loss D: {discriminator_loss*100:.2f}%")
 
-        self.save_samples()
+            if epoch % 20 == 0:
+                print(f"Epoch [{epoch}/{num_epochs}], Loss G: {generator_loss:.4f}, Loss D: {discriminator_loss:.4f}")
+                self.save_samples(epoch, batch_size)
 
         return history
 
@@ -160,22 +160,23 @@ def plot_history(history):
 
 
 if __name__ == '__main__':
-
     # Check if GPU is available.
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Import MNIST dataset.
 
     transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
+        transforms.ToTensor()
+        # transforms.Normalize((0.1307,), (0.3081,))
     ])
 
     mnist_ds = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
-    mnist_dl = DataLoader(mnist_ds, batch_size=64, shuffle=True)
+    mnist_dl = DataLoader(mnist_ds, batch_size=100, shuffle=True)
 
     # Train the GAN.
 
-    gan = GAN()
-    history = gan.train(dataloader=mnist_dl, num_epochs=1, lr=0.0001)
+    image_dim = (28, 28)
+
+    gan = GAN(latent_dim=50, image_dim=image_dim)
+    history = gan.train(dataloader=mnist_dl, num_epochs=500, lr=0.0002)
     plot_history(history)
