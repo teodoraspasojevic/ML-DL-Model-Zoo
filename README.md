@@ -10,11 +10,15 @@ This repository serves as a centralized location for various machine learning an
 
 Folders:
 
+generative_models: Contains implementation of generative models.
 interpretability/: Contains models and scripts focused on model interpretability and explainability. These tools help in understanding how models make decisions and the factors influencing these decisions.    
 transformers/: Includes implementations of transformer models, which are widely used in natural language processing (NLP) tasks for their powerful sequence-to-sequence capabilities.  
 
 Files:
 
+generative_models/GAN.py: Implementation of a GAN from scratch.
+generative_models/cGAN.py: Implementation of a Conditional GAN from scratch.
+generative_models/CNN_GAN.py: Implementation of a GAN from scratch, that uses CNN layers.
 interpretability/vision_transformer.py: Core implementation of interpretability techniques for vision transformers.  
 interpretability/notebook.ipynb: Jupyter notebook demonstrating interpretability methods and their applications.  
 transformers/transformer_model.py: Implementation of the transformer model architecture.  
