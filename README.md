@@ -16,9 +16,9 @@ transformers/: Includes implementations of transformer models, which are widely 
 
 Files:
 
-generative_models/GAN.py: Implementation of a GAN from scratch.
-generative_models/cGAN.py: Implementation of a Conditional GAN from scratch.
-generative_models/CNN_GAN.py: Implementation of a GAN from scratch, that uses CNN layers.
+generative_models/gan.py: Implementation of a GAN from scratch.
+generative_models/C_gan.py: Implementation of a Conditional GAN from scratch.
+generative_models/CNN_gan.py: Implementation of a GAN from scratch, that uses CNN layers.
 interpretability/vision_transformer.py: Core implementation of interpretability techniques for vision transformers.  
 interpretability/notebook.ipynb: Jupyter notebook demonstrating interpretability methods and their applications.  
 transformers/transformer_model.py: Implementation of the transformer model architecture.  
